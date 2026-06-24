@@ -1,0 +1,21 @@
+{
+  "name": "oasis-conversation-backend",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --env-file=.env server.js",
+    "dev": "node --env-file=.env --watch server.js",
+    "ingest": "node --env-file=.env ingest.js"
+  },
+  "type": "module",
+  "dependencies": {
+    "@lancedb/lancedb": "^0.30.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "gpt-tokenizer": "^3.4.0",
+    "gray-matter": "^4.0.3",
+    "ollama": "^0.6.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6"
+  }
+}

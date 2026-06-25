@@ -1,7 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import { initVectorStore } from './vectorstore.js'
-import { runPipeline } from './pipeline.js'
+import { streamPipeline } from './pipeline.js'
 
 const app = express()
 app.use(cors())
@@ -60,44 +60,77 @@ function getOrCreateSession(sessionId) {
     return sessions.get(sessionId).history
 }
 
+/**
+ * POST /chat
+ *
+ * Request body: { message: string, sessionId: string }
+ *
+ * Response: SSE stream
+ *   - data: <token>        — one or more raw tokens from the LLM
+ *   - data: [DONE]         — signals end of stream; client should close the connection
+ *   - data: [ERROR] <msg>  — signals a server-side error mid-stream
+ *
+ * Client-side TTS tip: buffer incoming tokens until a sentence boundary
+ * ('. ', '? ', '! ', '\n') before handing off to the speech synthesizer,
+ * so TTS speaks complete phrases rather than individual tokens.
+ */
 app.post('/chat', async (req, res) => {
+    // --- Validate request ---
+    if (!req.body || Object.keys(req.body).length === 0) {
+        return res.status(400).json({ error: 'Request body is empty' })
+    }
+
+    const { message, sessionId } = req.body
+
+    if (!message) {
+        return res.status(400).json({ error: 'message field is required' })
+    }
+
+    if (typeof message !== 'string' || message.trim().length === 0) {
+        return res.status(400).json({ error: 'message must be a non-empty string' })
+    }
+
+    if (!sessionId) {
+        return res.status(400).json({ error: 'sessionId field is required' })
+    }
+
+    // --- Set SSE headers ---
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    res.setHeader('X-Accel-Buffering', 'no')   // Disables Nginx proxy buffering if present
+    res.flushHeaders()
+
+    const history = getOrCreateSession(sessionId)
+
     try {
-        if (!req.body || Object.keys(req.body).length === 0) {
-            return res.status(400).json({ error: 'Request body is empty' })
-        }
-
-        const { message, sessionId } = req.body
-
-        if (!message) {
-            return res.status(400).json({ error: 'message field is required' })
-        }
-
-        if (typeof message !== 'string' || message.trim().length === 0) {
-            return res.status(400).json({ error: 'message must be a non-empty string' })
-        }
-
-        if (!sessionId) {
-            return res.status(400).json({ error: 'sessionId field is required' })
-        }
-
-        const history = getOrCreateSession(sessionId)
-
-        const response = await runPipeline(
+        const fullResponse = await streamPipeline(
             message.trim(),
             history,
             OLLAMA_LLM_MODEL,
             OLLAMA_EMBEDDING_MODEL,
             OLLAMA_HOST,
-            OLLAMA_API_KEY
+            OLLAMA_API_KEY,
+            (token) => {
+                // Escape newlines so each SSE message stays on one line
+                const safe = token.replace(/\n/g, '\\n')
+                res.write(`data: ${safe}\n\n`)
+            }
         )
 
+        // Save to session history only after the full response is assembled
         history.push({ role: 'user', content: message.trim() })
-        history.push({ role: 'assistant', content: response })
+        history.push({ role: 'assistant', content: fullResponse })
 
-        return res.json({ response })
+        res.write('data: [DONE]\n\n')
+        res.end()
     } catch (err) {
         console.error('[server] Error processing request:', err)
-        return res.status(500).json({ error: 'Internal server error' })
+
+        // If headers are already sent we can't change status code,
+        // so signal the error in-band via SSE then close.
+        res.write('data: [ERROR] Internal server error\n\n')
+        res.end()
     }
 })
 

@@ -41,6 +41,7 @@ export async function insertChunks(embeddedChunks) {
 export async function searchSimilarChunks(queryEmbedding, topK = 5, similarityThreshold = 0.5) {
     const results = await table
         .vectorSearch(queryEmbedding)
+        .distanceType('cosine')
         .limit(topK)
         .toArray()
 
